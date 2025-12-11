@@ -1,0 +1,14 @@
+#!/bin/bash
+
+TEMP_DIR="/tmp/letsencrypt"
+mkdir -p "$TEMP_DIR"
+
+sudo cp /etc/letsencrypt/live/your_path/full_cred.pem "$TEMP_DIR/full_cred.pem"
+sudo cp /etc/letsencrypt/live/your_path/privkey.pem "$TEMP_DIR/privkey.pem"
+
+# Certificado público: ok ser world-readable
+sudo chmod 644 "$TEMP_DIR/full_cred.pem"
+
+# Chave privada: apenas root 
+sudo chmod 600 "$TEMP_DIR/privkey.pem"
+sudo chown root:root "$TEMP_DIR/privkey.pem"
