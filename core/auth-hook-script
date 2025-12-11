@@ -1,0 +1,26 @@
+#!/bin/bash
+
+GCP_PROJECT="your-project"
+DNS_ZONE="dns-zone"
+DNS_NAME="your-dns-name"
+
+echo "Registrando TXT para validação ACME (DNS challenge)..."
+
+gcloud dns record-sets transaction start \
+  --zone="${DNS_ZONE}" \
+  --project="${GCP_PROJECT}"
+
+gcloud dns record-sets transaction add \
+  --name="${DNS_NAME}" \
+  --type=TXT \
+  --ttl=60 \
+  "${CERTBOT_VALIDATION}" \
+  --zone="${DNS_ZONE}" \
+  --project="${GCP_PROJECT}"
+
+gcloud dns record-sets transaction execute \
+  --zone="${DNS_ZONE}" \
+  --project="${GCP_PROJECT}"
+
+# Aguarda propagação DNS
+sleep 120
