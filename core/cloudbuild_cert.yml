@@ -1,0 +1,230 @@
+steps:
+  # Baixar script que prepara os certificados na VM
+  - name: "gcr.io/cloud-builders/gcloud"
+    entrypoint: bash
+    args:
+      [
+        "-c",
+        "gcloud secrets versions access latest --secret=prepare-cert-files-secret --out-file=prepare-cert-files.sh",
+      ]
+
+  # Baixar service account usada pelo Certbot (DNS Challenge)
+  - name: "gcr.io/cloud-builders/gcloud"
+    entrypoint: bash
+    args:
+      [
+        "-c",
+        "gcloud secrets versions access latest --secret=certbot-sa-key --out-file=sa-certbot.json",
+      ]
+
+  # Baixar script principal de renovação
+  - name: "gcr.io/cloud-builders/gcloud"
+    entrypoint: bash
+    args:
+      [
+        "-c",
+        "gcloud secrets versions access latest --secret=renew-cert-script --out-file=renew-cert.sh",
+      ]
+
+  # Tornar script executável
+  - name: "gcr.io/cloud-builders/gcloud"
+    entrypoint: bash
+    args:
+      - "-c"
+      - "chmod +x /workspace/renew-cert.sh"
+
+  # Baixar scripts de hook
+  - name: "gcr.io/cloud-builders/gcloud"
+    entrypoint: bash
+    args:
+      - "-c"
+      - "gcloud secrets versions access latest --secret=certbot-auth-hook --out-file=/workspace/auth-hook.sh"
+
+  - name: "gcr.io/cloud-builders/gcloud"
+    entrypoint: bash
+    args:
+      - "-c"
+      - "gcloud secrets versions access latest --secret=certbot-cleanup-hook --out-file=/workspace/cleanup-hook.sh"
+
+  # Permissões de hook
+  - name: "gcr.io/cloud-builders/gcloud"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        chmod +x /workspace/auth-hook.sh
+        chmod +x /workspace/cleanup-hook.sh
+
+  # Baixar chave SSH privada
+  - name: "gcr.io/cloud-builders/gcloud"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        gcloud secrets versions access latest --secret=automation-ssh-private \
+          --out-file=/workspace/ssh-key
+        chmod 600 /workspace/ssh-key
+
+  # Baixar chave SSH pública
+  - name: "gcr.io/cloud-builders/gcloud"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        gcloud secrets versions access latest --secret=automation-ssh-public \
+          --out-file=/workspace/ssh-key.pub
+        chmod 644 /workspace/ssh-key.pub
+
+  # Enviar chaves + hooks para a VM
+  - name: "gcr.io/cloud-builders/gcloud"
+    args:
+      [
+        "compute",
+        "scp",
+        "--zone", "generic-zone",
+        "--project", "generic-project",
+        "/workspace/ssh-key",
+        "/workspace/ssh-key.pub",
+        "/workspace/auth-hook.sh",
+        "/workspace/cleanup-hook.sh",
+        "user@generic-instance:/tmp/",
+      ]
+
+  # Enviar script de renovação
+  - name: "gcr.io/cloud-builders/gcloud"
+    args:
+      [
+        "compute",
+        "scp",
+        "--zone", "generic-zone",
+        "--project", "generic-project",
+        "/workspace/renew-cert.sh",
+        "user@generic-instance:/tmp/renew-cert.sh",
+      ]
+
+  # Ativar SA usada pelo DNS challenge
+  - name: "gcr.io/cloud-builders/gcloud"
+    args:
+      [
+        "auth", "activate-service-account",
+        "--key-file", "/workspace/sa-certbot.json",
+      ]
+
+  # Executar renovação na VM
+  - name: "gcr.io/cloud-builders/gcloud"
+    args:
+      [
+        "compute", "ssh",
+        "user@generic-instance",
+        "--zone", "generic-zone",
+        "--project", "generic-project",
+        "--ssh-key-file=/workspace/ssh-key",
+        "--command", "sudo /tmp/renew-cert.sh",
+      ]
+
+  # Configurar acesso ao cluster GKE
+  - name: "gcr.io/cloud-builders/gcloud"
+    args:
+      [
+        "container", "clusters", "get-credentials",
+        "generic-gke-cluster",
+        "--region", "generic-region",
+        "--project", "generic-project",
+      ]
+
+  # Remover secret TLS antigo
+  - name: "gcr.io/cloud-builders/gcloud"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        kubectl delete secret tls-secret || true
+
+  # Enviar script prepare-cert-files.sh para a VM
+  - name: "gcr.io/cloud-builders/gcloud"
+    args:
+      [
+        "compute", "scp",
+        "--zone", "generic-zone",
+        "--project", "generic-project",
+        "/workspace/prepare-cert-files.sh",
+        "user@generic-instance:/tmp/prepare-cert-files.sh",
+      ]
+
+  # Executar prepare-cert-files.sh na VM
+  - name: "gcr.io/cloud-builders/gcloud"
+    args:
+      [
+        "compute", "ssh",
+        "user@generic-instance",
+        "--zone", "generic-zone",
+        "--project", "generic-project",
+        "--ssh-key-file=/workspace/ssh-key",
+        "--command", "bash /tmp/prepare-cert-files.sh",
+      ]
+
+  # Baixar certificados da VM para o Cloud Build
+  - name: "gcr.io/cloud-builders/gcloud"
+    args:
+      [
+        "compute", "scp",
+        "--zone", "generic-zone",
+        "--project", "generic-project",
+        "user@generic-instance:/tmp/letsencrypt/fullchain.pem",
+        "/workspace/cert.pem",
+      ]
+
+  - name: "gcr.io/cloud-builders/gcloud"
+    args:
+      [
+        "compute", "scp",
+        "--zone", "generic-zone",
+        "--project", "generic-project",
+        "user@generic-instance:/tmp/letsencrypt/privkey.pem",
+        "/workspace/key.pem",
+      ]
+
+  # Ajustar permissões
+  - name: "gcr.io/cloud-builders/gcloud"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        chmod 644 /workspace/cert.pem
+        chmod 600 /workspace/key.pem
+
+  # Criar novo secret no namespace principal
+  - name: "gcr.io/cloud-builders/gcloud"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        kubectl create secret tls tls-secret --cert /workspace/cert.pem --key /workspace/key.pem
+
+  # Deletar secrets em namespaces específicos (genéricos)
+  - name: "gcr.io/cloud-builders/gcloud"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        kubectl delete secret tls-secret -n namespace-a || true
+        kubectl delete secret tls-secret -n namespace-b || true
+        kubectl delete secret tls-secret -n namespace-c || true
+
+  # Replicar secret TLS para namespaces
+  - name: "gcr.io/cloud-builders/gcloud"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        apt-get update && apt-get install -y jq
+
+        for ns in namespace-a namespace-b namespace-c; do
+          kubectl get secret tls-secret -o json \
+            | jq 'del(.metadata["namespace","creationTimestamp","resourceVersion","selfLink","uid","ownerReferences"])' \
+            | kubectl apply -n $ns -f -
+        done
+
+options:
+  substitution_option: ALLOW_LOOSE
+  logging: CLOUD_LOGGING_ONLY
